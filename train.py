@@ -187,9 +187,7 @@ class DCAutoEncoderTrainer:
         # Freeze all except middle layers
         for param in self.model.parameters():
             param.requires_grad = False
-        for param in self.model.middle_conv1.parameters():
-            param.requires_grad = True
-        for param in self.model.middle_conv2.parameters():
+        for param in self.model.middle.parameters():
             param.requires_grad = True
             
         for epoch in range(start_epoch, epochs):
@@ -232,10 +230,12 @@ class DCAutoEncoderTrainer:
         """Low-resolution local refinement phase with GAN"""
         print("Phase 3: Low-resolution local refinement with GAN")
         
-        # Freeze all except decoder head
+        # Freeze all except decoder
         for param in self.model.parameters():
             param.requires_grad = False
-        for param in self.model.final_conv.parameters():
+        for param in self.model.decoder_stages.parameters():
+            param.requires_grad = True
+        for param in self.model.final_blocks.parameters():
             param.requires_grad = True
             
         # First train only GAN for 10% of epochs
@@ -250,7 +250,7 @@ class DCAutoEncoderTrainer:
                 for batch in tqdm(train_loader, total=len(train_loader)):
                     images = batch[0].to(self.device)
                     
-                    with autocast("cuda"):
+                    with autocast('cuda'):
                         reconstructed = self.model(images)
 
                         real_pred = self.discriminator(images)
@@ -295,7 +295,7 @@ class DCAutoEncoderTrainer:
                 images = batch[0].to(self.device)
                 
                 # Train discriminator
-                with autocast("cuda"):
+                with autocast('cuda'):
                     reconstructed = self.model(images)
                     
                     real_pred = self.discriminator(images)
@@ -316,7 +316,7 @@ class DCAutoEncoderTrainer:
                 self.scaler.step(self.opt_disc)
                 
                 # Train generator (decoder head)
-                with autocast("cuda"):
+                with autocast('cuda'):
                     reconstructed = self.model(images)
                     fake_pred = self.discriminator(reconstructed)
                     
@@ -424,10 +424,10 @@ if __name__ == "__main__":
 
     datasets.config.HF_HUB_OFFLINE = 1
     
-    low_res_loader, high_res_loader = get_dataloaders(batch_size_low=32, batch_size_high=4)
+    low_res_loader, high_res_loader = get_dataloaders(batch_size_low=20, batch_size_high=2)
 
     # Create model and trainer
-    model = DeepCompressionAutoencoder(spatial_compression=64)
+    model = DeepCompressionAutoencoder(spatial_compression=64, latent_channels=1024, initial_channels=16)
     trainer = DCAutoEncoderTrainer(model, checkpoint_dir='dc_ae_checkpoints')
 
     # Print parameters
@@ -435,6 +435,6 @@ if __name__ == "__main__":
     print(f"Discriminator parameters: {sum(p.numel() for p in trainer.discriminator.parameters() if p.requires_grad)}")
     
     # Three-phase training
-    trainer.train_phase1(low_res_loader, epochs=10)
-    # trainer.train_phase2(high_res_loader, epochs=2)
-    trainer.train_phase3(low_res_loader, epochs=10)
+    # trainer.train_phase1(low_res_loader, epochs=10)
+    trainer.train_phase2(high_res_loader, epochs=1)
+    # trainer.train_phase3(low_res_loader, epochs=10)

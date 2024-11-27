@@ -71,40 +71,109 @@ class ResidualUpsampleBlock(nn.Module):
 
         return x + shortcut
 
+class ConvBlock(nn.Module):
+    """Additional convolution block for increasing depth"""
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.norm1 = nn.GroupNorm(8, channels)
+        self.norm2 = nn.GroupNorm(8, channels)
+        self.activation = nn.SiLU()
+        
+    def forward(self, x):
+        residual = x
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.activation(x)
+        x = self.conv2(x)
+        x = self.norm2(x)
+        x = self.activation(x)
+        return x + residual
+
+class EncoderStage(nn.Module):
+    """Enhanced encoder stage with multiple conv blocks"""
+    def __init__(self, in_channels, out_channels, num_blocks=3):
+        super().__init__()
+        self.downsample = ResidualDownsampleBlock(in_channels, out_channels)
+        self.blocks = nn.ModuleList([
+            ConvBlock(out_channels) for _ in range(num_blocks)
+        ])
+        
+    def forward(self, x):
+        x = self.downsample(x)
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+class DecoderStage(nn.Module):
+    """Enhanced decoder stage with multiple conv blocks"""
+    def __init__(self, in_channels, out_channels, num_blocks=3):
+        super().__init__()
+        self.upsample = ResidualUpsampleBlock(in_channels, out_channels)
+        self.blocks = nn.ModuleList([
+            ConvBlock(out_channels) for _ in range(num_blocks)
+        ])
+        
+    def forward(self, x):
+        x = self.upsample(x)
+        for block in self.blocks:
+            x = block(x)
+        return x
+
 class DeepCompressionAutoencoder(nn.Module):
-    def __init__(self, spatial_compression=64, in_channels=3, latent_channels=128):
+    def __init__(self, spatial_compression=64, in_channels=3, latent_channels=128, initial_channels=64, num_blocks=3):
         super().__init__()
         
         # Calculate number of downsampling stages needed
         self.num_stages = int(torch.log2(torch.tensor(spatial_compression)))
-        initial_channels = 64
+        initial_channels = initial_channels
         
         # Encoder
-        self.initial_conv = nn.Conv2d(in_channels, initial_channels, 3, padding=1)
+        self.initial_conv = nn.Sequential(
+            nn.Conv2d(in_channels, initial_channels, 3, padding=1),
+            nn.GroupNorm(8, initial_channels),
+            nn.SiLU(),
+            ConvBlock(initial_channels),
+            ConvBlock(initial_channels)
+        )
         
         # Build encoder stages
         self.encoder_stages = nn.ModuleList()
         current_channels = initial_channels
         for i in range(self.num_stages):
-            # out_channels = min(current_channels * 2, 1024)
             out_channels = current_channels * 2
-            self.encoder_stages.append(ResidualDownsampleBlock(current_channels, out_channels))
+            self.encoder_stages.append(
+                EncoderStage(current_channels, out_channels, num_blocks)
+            )
             current_channels = out_channels
             
-        # Middle stage
-        self.middle_conv1 = nn.Conv2d(current_channels, current_channels, 1)
-        self.middle_conv2 = nn.Conv2d(current_channels, latent_channels, 1)
+        # Middle stage - increased capacity
+        middle_channels = current_channels * 2
+        self.middle = nn.Sequential(
+            nn.Conv2d(current_channels, middle_channels, 1),
+            nn.GroupNorm(8, middle_channels),
+            nn.SiLU(),
+            *[ConvBlock(middle_channels) for _ in range(num_blocks)],
+            nn.Conv2d(middle_channels, latent_channels, 1)
+        )
         
         # Build decoder stages
         self.decoder_stages = nn.ModuleList()
         current_channels = latent_channels
         for i in range(self.num_stages):
-            out_channels = max(current_channels // 2, initial_channels)
-            self.decoder_stages.append(ResidualUpsampleBlock(current_channels, out_channels))
+            out_channels = max(current_channels // 2, initial_channels // 2)
+            self.decoder_stages.append(
+                DecoderStage(current_channels, out_channels, num_blocks)
+            )
             current_channels = out_channels
             
-        # Final output
-        self.final_conv = nn.Conv2d(current_channels, in_channels, 3, padding=1)
+        # Final output with additional processing
+        self.final_blocks = nn.Sequential(
+            ConvBlock(current_channels),
+            ConvBlock(current_channels),
+            nn.Conv2d(current_channels, in_channels, 3, padding=1)
+        )
         
     def encode(self, x):
         x = self.initial_conv(x)
@@ -114,10 +183,7 @@ class DeepCompressionAutoencoder(nn.Module):
             x = stage(x)
             
         # Middle stage
-        x = self.middle_conv1(x)
-        x = F.silu(x)
-        latent = self.middle_conv2(x)
-        
+        latent = self.middle(x)
         return latent
         
     def decode(self, latent):
@@ -128,7 +194,7 @@ class DeepCompressionAutoencoder(nn.Module):
             x = stage(x)
             
         # Final output
-        x = self.final_conv(x)
+        x = self.final_blocks(x)
         return x
         
     def forward(self, x):
@@ -138,7 +204,7 @@ class DeepCompressionAutoencoder(nn.Module):
 
 if __name__ == "__main__":
     # Instantiate the model
-    f128_model = DeepCompressionAutoencoder(spatial_compression=64, latent_channels=128)
+    f128_model = DeepCompressionAutoencoder(spatial_compression=8, latent_channels=16)
     print(f128_model)
     # Print parameter count
     print(sum(p.numel() for p in f128_model.parameters() if p.requires_grad))
