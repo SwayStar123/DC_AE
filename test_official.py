@@ -21,7 +21,7 @@ if __name__ == "__main__":
         return (x * 0.5 + 0.5).clamp(0, 1)
 
     # Load image from image.png
-    img = Image.open("anime.jpg").convert("RGB")
+    img = Image.open("test_log/anime.jpg").convert("RGB")
     img = transform(img)[None].to(torch.bfloat16).to(device)
     image = denorm(img).cpu()
 
